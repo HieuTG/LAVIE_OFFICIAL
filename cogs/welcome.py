@@ -3,23 +3,6 @@ from discord import member
 from discord.ext import commands
 import os
 
-# ==========================================
-# 0. HÀM HỖ TRỢ LẤY ROLE PING TỪ .ENV
-# ==========================================
-def get_welcome_roles_ping():
-    """Đọc danh sách ID role từ WELCOME_ROLES trong .env và chuyển thành chuỗi ping"""
-    roles_env = os.getenv("WELCOME_ROLES", "")
-    if not roles_env:
-        return ""
-    
-    pings = []
-    for role_id_str in roles_env.split(","):
-        role_id_str = role_id_str.strip()
-        if role_id_str.isdigit():
-            pings.append(f"<@&{role_id_str}>")
-            
-    return " ".join(pings)
-
 
 # ==========================================
 # 1. GIAO DIỆN WELCOME COMPONENT V2 (KÊNH WELCOME)
@@ -79,16 +62,13 @@ class WelcomeCog(commands.Cog):
             try:
                 chat_channel = member.guild.get_channel(int(chat_channel_env))
                 if chat_channel:
-                    # Chuỗi tag người dùng mới + ping 2 role từ .env (nằm ngoài embed để thông báo)
-                    roles_ping = get_welcome_roles_ping()
-                    content_ping = f"{member.mention} {roles_ping}".strip()
-                    
-                    # Nội dung Embed (đã thay bbi thành member.mention, còn lại giữ nguyên đúng văn bản)
+                    content_ping = f"||<@&1530849668274061363> <@&1530849676234985484> ra đón khách||".strip()
+                
                     embed_desc = (
-                        f"## <a:cathappi:1483356014899236926> Chào mừng {member.mention} đã đến với **L A V I E !**\n"
+                        f"## <a:bearheart:1502087912664334388>  Chào mừng {member.mention} đã đến với **L A V I E !**\n"
                         "⊹　⁺　　　⁺　　　　 ︵　⁺　　　　 ︵　　⟡\n"
                         "> <a:tim:1502033739008577597> Mong rằng mỗi lần ghé qua, bạn đều tìm thấy một chút niềm vui, một cuộc trò chuyện dễ chịu và những người sẵn sàng đồng hành cùng bạn.**\n"
-                        "<a:gifcat3:1507669255402033243> Chúc bạn luôn có những ngày thật vui, và nhớ uống đủ nước nha!"
+                        "<a:gifcat3:1507669255402033243>  Chúc bạn luôn có những ngày thật vui, và nhớ uống đủ nước nha!"
                     )
                     
                     embed = discord.Embed(
