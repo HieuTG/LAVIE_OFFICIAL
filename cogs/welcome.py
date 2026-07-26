@@ -4,9 +4,26 @@ from discord.ext import commands
 import os
 
 # ==========================================
-# 1. GIAO DIỆN WELCOME COMPONENT V2
+# 0. HÀM HỖ TRỢ LẤY ROLE PING TỪ .ENV
 # ==========================================
+def get_welcome_roles_ping():
+    """Đọc danh sách ID role từ WELCOME_ROLES trong .env và chuyển thành chuỗi ping"""
+    roles_env = os.getenv("WELCOME_ROLES", "")
+    if not roles_env:
+        return ""
+    
+    pings = []
+    for role_id_str in roles_env.split(","):
+        role_id_str = role_id_str.strip()
+        if role_id_str.isdigit():
+            pings.append(f"<@&{role_id_str}>")
+            
+    return " ".join(pings)
 
+
+# ==========================================
+# 1. GIAO DIỆN WELCOME COMPONENT V2 (KÊNH WELCOME)
+# ==========================================
 class WelcomeView(discord.ui.LayoutView):
     def __init__(self, member: discord.Member):
         super().__init__(timeout=None)
@@ -36,7 +53,6 @@ class WelcomeView(discord.ui.LayoutView):
 # ==========================================
 # 2. XỬ LÝ SỰ KIỆN THÀNH VIÊN MỚI
 # ==========================================
-
 class WelcomeCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -44,23 +60,47 @@ class WelcomeCog(commands.Cog):
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
         """Tự động kích hoạt khi có thành viên mới vào server"""
-        welcome_channel_env = os.getenv("WELCOME_CHANNEL")
         
-        if not welcome_channel_env:
-            return
+        # --- TÍNH NĂNG 1: GỬI COMPONENT V2 VÀO KÊNH WELCOME ---
+        welcome_channel_env = os.getenv("WELCOME_CHANNEL")
+        if welcome_channel_env and welcome_channel_env.isdigit():
+            try:
+                channel_id = int(welcome_channel_env)
+                wlc_channel = member.guild.get_channel(channel_id)
+                if wlc_channel:
+                    view = WelcomeView(member)
+                    await wlc_channel.send(view=view)
+            except Exception as e:
+                print(f"❌ [Lỗi Welcome Component]: {e}")
 
-        try:
-            channel_id = int(welcome_channel_env)
-            channel = member.guild.get_channel(channel_id)
-            
-            if channel:
-                # Khởi tạo giao diện welcome và gửi vào kênh
-                view = WelcomeView(member)
-                await channel.send(view=view)
-        except ValueError:
-            print("⚠️ [Warning] WELCOME_CHANNEL trong .env không phải ID chữ số hợp lệ!")
-        except Exception as e:
-            print(f"❌ [Lỗi Welcome] Không thể gửi tin nhắn chào mừng: {e}")
+        # --- TÍNH NĂNG 2: GỬI EMBED VÀO KÊNH CHAT CHUNG ---
+        chat_channel_env = os.getenv("CHAT_CHANNEL")
+        if chat_channel_env and chat_channel_env.isdigit():
+            try:
+                chat_channel = member.guild.get_channel(int(chat_channel_env))
+                if chat_channel:
+                    # Chuỗi tag người dùng mới + ping 2 role từ .env (nằm ngoài embed để thông báo)
+                    roles_ping = get_welcome_roles_ping()
+                    content_ping = f"{member.mention} {roles_ping}".strip()
+                    
+                    # Nội dung Embed (đã thay bbi thành member.mention, còn lại giữ nguyên đúng văn bản)
+                    embed_desc = (
+                        f"## <a:cathappi:1483356014899236926> Chào mừng {member.mention} đã đến với **L A V I E !**\n"
+                        "⊹　⁺　　　⁺　　　　 ︵　⁺　　　　 ︵　　⟡\n"
+                        "> <a:tim:1502033739008577597> Mong rằng mỗi lần ghé qua, bạn đều tìm thấy một chút niềm vui, một cuộc trò chuyện dễ chịu và những người sẵn sàng đồng hành cùng bạn.**\n"
+                        "<a:gifcat3:1507669255402033243> Chúc bạn luôn có những ngày thật vui, và nhớ uống đủ nước nha!"
+                    )
+                    
+                    embed = discord.Embed(
+                        description=embed_desc,
+                        color=0x2b2d31
+                    )
+                    embed.set_image(url="https://cdn.discordapp.com/attachments/1526979776030441532/1530833936937386114/aca7cec2aa4ab3eac249d4dcac25e57f.gif?ex=6a6703b4&is=6a65b234&hm=25918c335e0746581e904a22a42332249416c62562b42b91d61505dba64262a3&")
+                    embed.set_footer(text="𓎟.         ᆞ˚.              𓎟.         ᆞ˚.              ✧.     ,,      .")
+                    
+                    await chat_channel.send(content=content_ping, embed=embed)
+            except Exception as e:
+                print(f"❌ [Lỗi Welcome Embed]: {e}")
 
 
 async def setup(bot):
