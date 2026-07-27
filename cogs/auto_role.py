@@ -48,12 +48,12 @@ class AutoRoleCog(commands.Cog):
 
         # 4. Kiểm tra thành viên đã có role chưa
         if role in member.roles:
-            return await ctx.reply(f"⚠️ Thành viên {member.mention} đã có role {role.mention} từ trước rồi!")
+            return await ctx.reply(f"⚠️ Thành viên {member.mention} đã có role `ngoan xinh iu` từ trước rồi!")
 
         # 5. Tiến hành cấp Role
         try:
             await member.add_roles(role, reason=f"Được thêm bởi {ctx.author}")
-            await ctx.reply(f"✅ Đã thêm thành công role {role.mention} cho {member.mention}!")
+            await ctx.reply(f"✅ Đã thêm thành công role `ngoan xinh iu` cho {member.mention}!")
         except discord.Forbidden:
             await ctx.reply("❌ **Thiếu quyền!** Vị trí Role của Bot trong Cài đặt máy chủ đang thấp hơn Role cần cấp.")
         except Exception as e:
