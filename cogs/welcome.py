@@ -56,32 +56,5 @@ class WelcomeCog(commands.Cog):
             except Exception as e:
                 print(f"❌ [Lỗi Welcome Component]: {e}")
 
-        # --- TÍNH NĂNG 2: GỬI EMBED VÀO KÊNH CHAT CHUNG ---
-        chat_channel_env = os.getenv("CHAT_CHANNEL")
-        if chat_channel_env and chat_channel_env.isdigit():
-            try:
-                chat_channel = member.guild.get_channel(int(chat_channel_env))
-                if chat_channel:
-                    content_ping = f"||<@&1530849668274061363> <@&1530849676234985484> ra đón khách||".strip()
-                
-                    embed_desc = (
-                        f"## <a:bearheart:1502087912664334388>  Chào mừng {member.mention} đã đến với **L A V I E !**\n"
-                        "⊹　⁺　　　⁺　　　　 ︵　⁺　　　　 ︵　　⟡\n"
-                        "> <a:tim:1502033739008577597> Mong rằng mỗi lần ghé qua, bạn đều tìm thấy một chút niềm vui, một cuộc trò chuyện dễ chịu và những người sẵn sàng đồng hành cùng bạn.**\n"
-                        "<a:gifcat3:1507669255402033243>  Chúc bạn luôn có những ngày thật vui, và nhớ uống đủ nước nha!"
-                    )
-                    
-                    embed = discord.Embed(
-                        description=embed_desc,
-                        color=0x2b2d31
-                    )
-                    embed.set_image(url="https://cdn.discordapp.com/attachments/1526979776030441532/1530833936937386114/aca7cec2aa4ab3eac249d4dcac25e57f.gif?ex=6a6703b4&is=6a65b234&hm=25918c335e0746581e904a22a42332249416c62562b42b91d61505dba64262a3&")
-                    embed.set_footer(text="𓎟.         ᆞ˚.              𓎟.         ᆞ˚.              ✧.     ,,      .")
-                    
-                    await chat_channel.send(content=content_ping, embed=embed)
-            except Exception as e:
-                print(f"❌ [Lỗi Welcome Embed]: {e}")
-
-
 async def setup(bot):
     await bot.add_cog(WelcomeCog(bot))
