@@ -50,6 +50,21 @@ def parse_duration(time_str: str) -> int:
             return int(time_str) * 60
         raise ValueError("Đơn vị thời gian không hợp lệ (dùng s, m, h, d)")
 
+def extract_ids_from_link(link_or_id: str):
+    """Trích xuất channel_id và message_id từ Discord message link hoặc ID đơn"""
+    if not link_or_id:
+        return None, None
+    link_or_id = link_or_id.strip()
+    if "/" in link_or_id:
+        parts = link_or_id.rsplit("/", 2)
+        if len(parts) >= 2 and parts[-1].isdigit():
+            msg_id = int(parts[-1])
+            channel_id = int(parts[-2]) if parts[-2].isdigit() else None
+            return channel_id, msg_id
+    elif link_or_id.isdigit():
+        return None, int(link_or_id)
+    return None, None
+
 
 # ==========================================
 # 1. GIAO DIỆN GIVEAWAY COMPONENT V2
@@ -133,7 +148,7 @@ class GiveawayNukeCog(commands.Cog):
         self.check_giveaway_task.start()
 
     def init_db(self):
-        """Khởi tạo file cơ sở dữ liệu cho Giveaway và tự động cập nhật các cột mới nếu chưa có"""
+        """Khởi tạo file cơ sở dữ liệu cho Giveaway"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute("""
@@ -149,7 +164,6 @@ class GiveawayNukeCog(commands.Cog):
                 ended INTEGER DEFAULT 0
             )
         """)
-        # Cập nhật thêm cột winners_count và host_id nếu database đã tồn tại từ trước
         try:
             cursor.execute("ALTER TABLE giveaways ADD COLUMN winners_count INTEGER DEFAULT 1")
         except sqlite3.OperationalError:
@@ -177,21 +191,20 @@ class GiveawayNukeCog(commands.Cog):
         conn.close()
         return count
 
-    # --- LỆNH !GIVEAWAY (!GA) THEO CẤU TRÚC MỚI ---
-    @commands.command(name="giveaway", aliases=["ga"])
+    # --- LỆNH !GIVEAWAY (!GA) DẠNG GROUP ---
+    @commands.group(name="giveaway", aliases=["ga"], invoke_without_command=True)
     @is_staff()
     async def create_giveaway(self, ctx):
-        """Cú pháp: !ga <thời gian> <số người thắng> <tên giải thưởng> [-r <role>]"""
+        """Cú pháp tạo: !ga <thời gian> <số người thắng> <tên giải thưởng> [-r <role>]"""
         content = ctx.message.content
         parts = content.split(" ", 1)
         
         if len(parts) < 2:
             return await ctx.reply(
                 "❌ **Sai cú pháp!**\n"
-                "👉 **Hướng dẫn:** `!ga <Thời gian> <Số người thắng> <Phần thưởng> [-r <@Role>]`\n"
-                "💡 **Ví dụ:**\n"
-                "• `!ga 24h 1 Nitro Boost 1 tháng` *(Mọi người đều được tham gia, 1 người thắng)*\n"
-                "• `!ga 30m 3 100k VND -r @VIP` *(Chỉ role @VIP được tham gia, 3 người thắng)*"
+                "👉 **Tạo Giveaway:** `!ga <Thời gian> <Số người thắng> <Phần thưởng> [-r <@Role>]`\n"
+                "👉 **Kết thúc sớm:** `!ga end <Link tin nhắn>`\n"
+                "👉 **Reroll người thắng:** `!ga reroll <Link tin nhắn>`"
             )
 
         args_str = parts[1].strip()
@@ -246,6 +259,143 @@ class GiveawayNukeCog(commands.Cog):
             await ctx.message.delete()
         except:
             pass
+
+    # --- LỆNH LỆNH !GA END <LINK/ID> ---
+    @create_giveaway.command(name="end")
+    @is_staff()
+    async def end_giveaway(self, ctx, message_link: str = None):
+        """Kết thúc ngay lập tức một Giveaway đang diễn ra"""
+        if not message_link:
+            return await ctx.reply("❌ **Thiếu thông tin!** Dùng: `!ga end <Link tin nhắn hoặc ID tin nhắn Giveaway>`")
+
+        _, msg_id = extract_ids_from_link(message_link)
+        if not msg_id:
+            return await ctx.reply("❌ **Link tin nhắn hoặc Message ID không hợp lệ!**")
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT channel_id, guild_id, host_id, prize, end_time, required_role_id, winners_count, ended FROM giveaways WHERE message_id = ?", (msg_id,))
+        row = cursor.fetchone()
+
+        if not row:
+            conn.close()
+            return await ctx.reply("❌ **Không tìm thấy Giveaway** tương ứng với Link/ID này trong cơ sở dữ liệu!")
+
+        channel_id, guild_id, host_id, prize, end_time, req_role_id, winners_count, ended = row
+
+        if ended == 1:
+            conn.close()
+            return await ctx.reply("⚠️ **Giveaway này đã kết thúc từ trước rồi!**")
+
+        cursor.execute("SELECT user_id FROM ga_participants WHERE message_id = ?", (msg_id,))
+        participants = [r[0] for r in cursor.fetchall()]
+        count = len(participants)
+
+        if count == 0:
+            winner_text = "Không có ai tham gia"
+        else:
+            num_winners = min(count, winners_count if winners_count else 1)
+            winners_list = random.sample(participants, num_winners)
+            winner_text = ", ".join([f"<@{w_id}>" for w_id in winners_list])
+
+        cursor.execute("UPDATE giveaways SET ended = 1 WHERE message_id = ?", (msg_id,))
+        conn.commit()
+        conn.close()
+
+        # Cập nhật lại giao diện tin nhắn Giveaway
+        channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
+        msg = None
+        if channel:
+            try:
+                msg = await channel.fetch_message(msg_id)
+                view = GiveawayView(
+                    prize=prize, end_time=end_time, host_id=host_id,
+                    required_role_id=req_role_id, count=count, winners_count=winners_count, ended=True,
+                    winner_text=winner_text
+                )
+                await msg.edit(view=view)
+            except:
+                pass
+
+            if count > 0:
+                announcement = (
+                    f"<a:lucky:1524034548709724262> **Chúc mừng** {winner_text} nhận được **{prize}** của <@{host_id}>\n"
+                    f"Hãy mở Ticket tại <#1507407585962361078> trong vòng 24h để nhận thưởng nhé!"
+                )
+            else:
+                announcement = (
+                    f"🎁 **Phần thưởng:** `{prize}`\n"
+                    f"👤 **Người tạo:** <@{host_id}>\n"
+                    f"• *Không có ai tham gia Giveaway này.*"
+                )
+
+            try:
+                if msg:
+                    await msg.reply(content=announcement, mention_author=False)
+                else:
+                    await channel.send(content=announcement)
+            except:
+                pass
+
+        await ctx.reply("🛑 **Đã kết thúc Giveaway thành công!**")
+
+    # --- LỆNH !GA REROLL <LINK/ID> ---
+    @create_giveaway.command(name="reroll")
+    @is_staff()
+    async def reroll_giveaway(self, ctx, message_link: str = None):
+        """Quay lại người chiến thắng mới cho Giveaway đã kết thúc"""
+        if not message_link:
+            return await ctx.reply("❌ **Thiếu thông tin!** Dùng: `!ga reroll <Link tin nhắn hoặc ID tin nhắn Giveaway>`")
+
+        _, msg_id = extract_ids_from_link(message_link)
+        if not msg_id:
+            return await ctx.reply("❌ **Link tin nhắn hoặc Message ID không hợp lệ!**")
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT channel_id, guild_id, host_id, prize, end_time, required_role_id, winners_count, ended FROM giveaways WHERE message_id = ?", (msg_id,))
+        row = cursor.fetchone()
+
+        if not row:
+            conn.close()
+            return await ctx.reply("❌ **Không tìm thấy Giveaway** tương ứng với Link/ID này trong cơ sở dữ liệu!")
+
+        channel_id, guild_id, host_id, prize, end_time, req_role_id, winners_count, ended = row
+
+        cursor.execute("SELECT user_id FROM ga_participants WHERE message_id = ?", (msg_id,))
+        participants = [r[0] for r in cursor.fetchall()]
+        conn.close()
+
+        count = len(participants)
+        if count == 0:
+            return await ctx.reply("❌ **Không thể Reroll!** Không có ai bấm tham gia Giveaway này.")
+
+        num_winners = min(count, winners_count if winners_count else 1)
+        winners_list = random.sample(participants, num_winners)
+        winner_text = ", ".join([f"<@{w_id}>" for w_id in winners_list])
+
+        channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
+        if channel:
+            try:
+                msg = await channel.fetch_message(msg_id)
+            except:
+                msg = None
+
+            reroll_announcement = (
+                f"🎉 **REROLL GIVEAWAY!**\n"
+                f"<a:lucky:1524034548709724262> **Chúc mừng** {winner_text} nhận được **{prize}** của <@{host_id}>\n"
+                f"Hãy mở Ticket tại <#1507407585962361078> trong vòng 24h để nhận thưởng nhé!"
+            )
+
+            try:
+                if msg:
+                    await msg.reply(content=reroll_announcement, mention_author=False)
+                else:
+                    await channel.send(content=reroll_announcement)
+            except:
+                pass
+
+        await ctx.reply(f"🎲 **Đã Reroll thành công!** Người chiến thắng mới: {winner_text}")
 
     # --- SỰ KIỆN BẤM NÚT THAM GIA / RỜI GIVEAWAY ---
     @commands.Cog.listener()
@@ -354,7 +504,6 @@ class GiveawayNukeCog(commands.Cog):
             except:
                 pass
 
-            # Gửi tin nhắn văn bản thuần (Không Embed) theo đúng template gốc của bạn
             if count > 0:
                 announcement = (
                     f"<a:lucky:1524034548709724262> **Chúc mừng** {winner_text} nhận được **{prize}** của <@{host_id}>\n"
