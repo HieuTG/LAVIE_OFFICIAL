@@ -222,11 +222,27 @@ class TicketCog(commands.Cog):
         ticket_id = random.randint(1000, 9999)
         channel_name = f"{prefix}-{ticket_id}"
 
+        # 1. Cấp quyền cơ bản (Người tạo, Bot và chặn @everyone)
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
             user: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True),
             guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True)
         }
+
+        # 2. Cấp quyền xem cho các role trong biến môi trường TICKET_SUPPORT
+        roles_env = os.getenv("TICKET_SUPPORT", "")
+        if roles_env:
+            for role_id_str in roles_env.split(","):
+                role_id_str = role_id_str.strip()
+                if role_id_str.isdigit():
+                    role = guild.get_role(int(role_id_str))
+                    if role:
+                        # Cấp quyền cho role đọc & gửi tin nhắn vào trong dictionary overwrites
+                        overwrites[role] = discord.PermissionOverwrite(
+                            view_channel=True, 
+                            send_messages=True, 
+                            attach_files=True
+                        )
 
         try:
             ticket_channel = await guild.create_text_channel(
@@ -237,7 +253,7 @@ class TicketCog(commands.Cog):
             
             await interaction.response.send_message(f"✅ Đã tạo {ticket_channel.mention}", ephemeral=True)
             
-            # Tạo chuỗi ping người dùng cùng các role support từ .env[cite: 5]
+            # Tạo chuỗi ping người dùng cùng các role support từ .env
             support_pings = get_support_pings()
             ping_message = f"{user.mention} vừa mới tạo ticket nè {support_pings}".strip()
             await ticket_channel.send(ping_message)
