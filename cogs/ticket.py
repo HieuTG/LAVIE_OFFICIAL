@@ -24,7 +24,19 @@ def get_support_pings():
             
     return " ".join(pings)
 
+def check_is_support(user: discord.Member) -> bool:
+    """Kiểm tra Admin, Manage Channels hoặc Role TICKET_SUPPORT"""
+    # 1. Nếu là Admin hoặc có quyền Quản lý kênh
+    if user.guild_permissions.administrator or user.guild_permissions.manage_channels:
+        return True
 
+    # 2. Kiểm tra danh sách ID Role từ TICKET_SUPPORT trong .env
+    roles_env = os.getenv("TICKET_SUPPORT", "")
+    if not roles_env:
+        return False
+
+    support_ids = [int(r.strip()) for r in roles_env.split(",") if r.strip().isdigit()]
+    return any(role.id in support_ids for role in user.roles)
 # ==========================================
 # 1. BẢNG FORM ĐIỀN LÝ DO ĐÓNG TICKET (MODAL)
 # ==========================================
@@ -168,7 +180,7 @@ class TicketCog(commands.Cog):
     async def ticket_set(self, ctx, channel: discord.TextChannel):
         """Thiết lập bảng tạo ticket"""
         await channel.send(view=TicketSetupView())
-        await ctx.send(f"✅ Đã thiết lập bảng Tạp Hóa LAVIE tại {channel.mention}")
+        await ctx.send(f"✅ Đã thiết lập bảng Tickettại {channel.mention}")
 
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction):
@@ -187,6 +199,12 @@ class TicketCog(commands.Cog):
             
         # --- NÚT CLAIM (TIẾP NHẬN TICKET) ---
         elif custom_id == "a31bd47b7d6b428ca50fdabc913f68e4":
+            if not check_is_support(interaction.user):
+                return await interaction.response.send_message(
+                    "⛔ Bạn không có role **TICKET_SUPPORT** để tiếp nhận ticket này!",
+                    ephemeral=True
+                )
+
             try:
                 history = [msg async for msg in interaction.channel.history(limit=5, oldest_first=True)]
                 original_user = history[0].mentions[0] if history and history[0].mentions else interaction.user
@@ -195,23 +213,26 @@ class TicketCog(commands.Cog):
 
             created_timestamp = int(interaction.channel.created_at.timestamp())
             status_text = f"✅ Đã tiếp nhận bởi {interaction.user.mention}"
-            
-            # Cập nhật lại View với trạng thái Claim
-            new_view = TicketReplyView(original_user, interaction.channel.name, created_timestamp, status=status_text)
+
+            # Cập nhật View đổi nhãn nút thành "Đã tiếp nhận" và khóa nút
+            new_view = TicketReplyView(
+                user=original_user, 
+                ticket_name=interaction.channel.name, 
+                created_at=created_timestamp, 
+                status=status_text,
+                claimed=True
+            )
             await interaction.response.edit_message(view=new_view)
             await interaction.followup.send(f"🤚 Staff {interaction.user.mention} đã tiếp nhận (claim) hỗ trợ ticket này!")
             
         # --- NÚT ĐÓNG TICKET VỚI LÝ DO ---
         elif custom_id == "89b6aee964664284a1d382b0ad6dd58e":
-            is_admin = interaction.user.guild_permissions.administrator
-            is_manage = interaction.user.guild_permissions.manage_channels
-            
-            if not (is_admin or is_manage):
+            if not check_is_support(interaction.user):
                 return await interaction.response.send_message(
-                    "❌ Bạn không có quyền đóng ticket! Chỉ Administrator hoặc Staff được giao quyền mới có thể thực hiện.",
+                    "❌ Bạn không có quyền đóng ticket! Chỉ Administrator, Quản lý kênh hoặc role **TICKET_SUPPORT** mới có thể thực hiện.",
                     ephemeral=True
                 )
-                
+
             await interaction.response.send_modal(CloseTicketModal(self))
 
     async def process_ticket(self, interaction: discord.Interaction, prefix: str):
