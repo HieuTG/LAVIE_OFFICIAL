@@ -1,30 +1,26 @@
 import discord
 from discord.ext import commands, tasks
+from discord import app_commands
 import sqlite3
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 
 # ==========================================
 # 0. HÀM KIỂM TRA QUYỀN STAFF & XỬ LÝ TIME
 # ==========================================
-def is_staff():
-    """Kiểm tra người dùng có sở hữu role trong ROLES_STAFF hay không"""
-    async def predicate(ctx):
-        roles_env = os.getenv("ROLES_STAFF", "")
-        if not roles_env:
-            await ctx.reply("❌ **Lỗi cấu hình:** Chưa thiết lập biến `ROLES_STAFF` trong file `.env`!", delete_after=10)
-            return False
+def is_staff_user(interaction: discord.Interaction) -> bool:
+    """Kiểm tra người dùng có sở hữu role trong ROLES_STAFF hoặc Admin không"""
+    if interaction.user.guild_permissions.administrator:
+        return True
+    
+    roles_env = os.getenv("ROLES_STAFF", "")
+    if not roles_env:
+        return False
         
-        staff_role_ids = [int(r.strip()) for r in roles_env.split(",") if r.strip().isdigit()]
-        user_role_ids = [r.id for r in ctx.author.roles]
-        
-        if any(role_id in staff_role_ids for role_id in user_role_ids) or ctx.author.guild_permissions.administrator:
-            return True
-        else:
-            await ctx.reply("⛔ Bạn không có quyền (Staff) để sử dụng lệnh này!", delete_after=10)
-            return False
-    return commands.check(predicate)
+    staff_role_ids = [int(r.strip()) for r in roles_env.split(",") if r.strip().isdigit()]
+    user_role_ids = [r.id for r in interaction.user.roles]
+    return any(role_id in staff_role_ids for role_id in user_role_ids)
 
 def parse_days(time_str: str) -> int:
     """Chuyển đổi chuỗi thời gian như '12d', '30d' hoặc '30' thành số ngày"""
@@ -55,12 +51,10 @@ class SearchModal(discord.ui.Modal, title="🔍 Tìm kiếm Custom Role"):
         if not query_id.isdigit():
             return await interaction.response.send_message("❌ ID nhập vào phải là một dãy số!", ephemeral=True)
 
-        # Tìm trong database theo role_id hoặc user_id
         records = self.cog.get_filtered_records(int(query_id))
         if not records:
             return await interaction.response.send_message(f"❌ Không tìm thấy Custom Role nào với ID `{query_id}` trong hệ thống!", ephemeral=True)
 
-        # Hiển thị kết quả tìm kiếm bằng Component V2
         view = CustomRoleListView(records, interaction.guild, page=0)
         await interaction.response.send_message("✅ **Kết quả tìm kiếm:**", view=view, ephemeral=True)
 
@@ -75,13 +69,11 @@ class CustomRoleListView(discord.ui.LayoutView):
         self.page = page
         self.per_page = 5
         self.total_pages = max(1, (len(self.records) + self.per_page - 1) // self.per_page)
-        
         self.build_view()
 
     def build_view(self):
         self.clear_items()
         
-        # --- BUILD CONTAINER CHỨA NỘI DUNG ---
         items = [
             discord.ui.TextDisplay(content="# Danh sách Custom Roles"),
             discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small)
@@ -105,15 +97,11 @@ class CustomRoleListView(discord.ui.LayoutView):
                 user_text = member.mention if member else f"*(ID: {user_id})*"
                 avatar_url = member.display_avatar.url if member else "https://cdn.discordapp.com/embed/avatars/0.png"
                 
-                # Tính trạng thái và thời gian
                 days_ago = max(0, (current_time - created_at) // 86400)
                 created_str = datetime.fromtimestamp(created_at).strftime("%d/%m/%Y")
                 expires_str = datetime.fromtimestamp(expires_at).strftime("%d/%m/%Y (%H:%M)")
                 
-                if current_time >= expires_at:
-                    status_badge = "🔴 **Hết hạn**"
-                else:
-                    status_badge = "🟢 **Còn hạn**"
+                status_badge = "🔴 **Hết hạn**" if current_time >= expires_at else "🟢 **Còn hạn**"
 
                 section_content = (
                     f"### `#0{idx}.` | Role: {role_text} - {status_badge}\n"
@@ -134,7 +122,6 @@ class CustomRoleListView(discord.ui.LayoutView):
         container = discord.ui.Container(*items)
         self.add_item(container)
 
-        # --- BUILD ACTION ROW (NÚT ĐIỀU HƯỚNG & TÌM KIẾM) ---
         btn_prev = discord.ui.Button(style=discord.ButtonStyle.secondary, emoji="◀️", disabled=(self.page <= 0))
         btn_prev.callback = self.prev_page
 
@@ -162,7 +149,6 @@ class CustomRoleListView(discord.ui.LayoutView):
             await interaction.response.edit_message(view=self)
 
     async def open_search(self, interaction: discord.Interaction):
-        # Mở Form tìm kiếm Modal
         modal = SearchModal(interaction.client, interaction.client.get_cog("CustomRolesCog"))
         await interaction.response.send_modal(modal)
 
@@ -172,14 +158,24 @@ class CustomRoleListView(discord.ui.LayoutView):
 class CustomRolesCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.db_path = "custom_role.db"
+        # Tự động chọn file DB đã tồn tại (custom_role.db hoặc custom_roles.db)
+        env_db = os.getenv("CUSTOM_ROLE_DB_PATH")
+        if env_db and os.path.exists(env_db):
+            self.db_path = env_db
+        elif os.path.exists("custom_roles.db"):
+            self.db_path = "custom_roles.db"
+        else:
+            self.db_path = "custom_role.db"
+
         self.init_database()
-        self.check_expires_task.start() # Khởi chạy luồng kiểm tra tự động 24/7
+        self.check_expires_task.start()
 
     def init_database(self):
-        """Khởi tạo file database sqlite3 nếu chưa có"""
+        """Khởi tạo hoặc kết nối file SQLite có sẵn và đảm bảo đủ cấu trúc cột"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
+        
+        # Tạo bảng nếu chưa tồn tại đúng cấu trúc 
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS custom_roles (
                 role_id INTEGER PRIMARY KEY,
@@ -189,8 +185,17 @@ class CustomRolesCog(commands.Cog):
                 notified INTEGER DEFAULT 0
             )
         """)
+
+        # Tự động bổ sung cột 'notified' nếu DB cũ chưa có
+        cursor.execute("PRAGMA table_info(custom_roles)")
+        columns = [column[1] for column in cursor.fetchall()]
+        if "notified" not in columns:
+            cursor.execute("ALTER TABLE custom_roles ADD COLUMN notified INTEGER DEFAULT 0")
+            print("🛠️ [DATABASE] Đã tự động bổ sung cột 'notified' vào bảng custom_roles!")
+
         conn.commit()
         conn.close()
+        print(f"✅ [CUSTOM ROLE] Đã kết nối thành công tới Database: '{self.db_path}'")
 
     def get_all_records(self):
         conn = sqlite3.connect(self.db_path)
@@ -209,7 +214,6 @@ class CustomRolesCog(commands.Cog):
         return rows
 
     async def log_to_mod_logs(self, guild: discord.Guild, title: str, description: str, color: int):
-        """Ghi log hệ thống lên kênh MOD_LOGS"""
         mod_logs_id = os.getenv("MOD_LOGS")
         if mod_logs_id and mod_logs_id.isdigit():
             channel = guild.get_channel(int(mod_logs_id))
@@ -217,44 +221,44 @@ class CustomRolesCog(commands.Cog):
                 embed = discord.Embed(title=title, description=description, color=color, timestamp=discord.utils.utcnow())
                 await channel.send(embed=embed)
 
-    # --- LỆNH !RLIST ---
-    @commands.command(name="rlist")
-    @is_staff()
-    async def rlist(self, ctx):
-        """Xem danh sách custom role bằng bảng Component V2"""
-        records = self.get_all_records()
-        view = CustomRoleListView(records, ctx.guild, page=0)
-        await ctx.reply(view=view)
+    # ==========================================
+    # 4. DASHBOARD SLASH COMMANDS (/customrole)
+    # ==========================================
+    role_group = app_commands.Group(name="customrole", description="Quản lý Custom Roles gia hạn")
 
-    # --- LỆNH !RADD ---
-    @commands.command(name="radd")
-    @is_staff()
-    async def radd(self, ctx, role: discord.Role = None, user: discord.Member = None, time_str: str = None):
-        """Thêm custom role cho user vào database với thời hạn (vd: 12d)"""
-        if not role or not user or not time_str:
-            return await ctx.reply(
-                "❌ **Sai cú pháp!**\n"
-                "👉 **Hướng dẫn sử dụng:** `!radd <@Role> <@User> <Thời_gian>`\n"
-                "💡 **Ví dụ:** `!radd @VIP @HieuTG 30d` (Gán role VIP cho HieuTG trong 30 ngày)"
-            )
+    # --- /customrole list ---
+    @role_group.command(name="list", description="Xem danh sách Custom Roles bằng bảng Component V2")
+    async def role_list(self, interaction: discord.Interaction):
+        if not is_staff_user(interaction):
+            return await interaction.response.send_message("⛔ Bạn không có quyền (Staff) để sử dụng lệnh này!", ephemeral=True)
+
+        records = self.get_all_records()
+        view = CustomRoleListView(records, interaction.guild, page=0)
+        await interaction.response.send_message(view=view)
+
+    # --- /customrole add ---
+    @role_group.command(name="add", description="Thêm custom role cho user với thời hạn (VD: 30d hoặc 30)")
+    @app_commands.describe(role="Role cần gán", user="Chủ sở hữu role", days="Thời gian sử dụng (VD: 30d)")
+    async def role_add(self, interaction: discord.Interaction, role: discord.Role, user: discord.Member, days: str):
+        if not is_staff_user(interaction):
+            return await interaction.response.send_message("⛔ Bạn không có quyền (Staff) để sử dụng lệnh này!", ephemeral=True)
 
         try:
-            days = parse_days(time_str)
-            if days <= 0: return await ctx.reply("❌ Số ngày phải lớn hơn 0!")
+            days_int = parse_days(days)
+            if days_int <= 0:
+                return await interaction.response.send_message("❌ Số ngày phải lớn hơn 0!", ephemeral=True)
         except ValueError:
-            return await ctx.reply("❌ **Định dạng thời gian không hợp lệ!**\n👉 Vui lòng nhập số ngày kèm chữ `d` (Ví dụ: `7d`, `12d`, `30d`).")
+            return await interaction.response.send_message("❌ **Định dạng thời gian không hợp lệ!** Vui lòng nhập dạng `30d` hoặc `30`.", ephemeral=True)
 
         now = int(time.time())
-        expires_at = now + (days * 86400)
+        expires_at = now + (days_int * 86400)
 
-        # Cấp role cho User trên server nếu chưa có
         if role not in user.roles:
             try:
                 await user.add_roles(role)
             except discord.Forbidden:
-                return await ctx.reply("❌ Bot không đủ quyền để cấp Role này! Hãy kiểm tra lại vị trí role của Bot trên Server.")
+                return await interaction.response.send_message("❌ Bot không đủ quyền để cấp Role này! Hãy kiểm tra lại thứ tự Role trong Cài đặt Server.", ephemeral=True)
 
-        # Lưu vào Database
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute("""
@@ -265,32 +269,27 @@ class CustomRolesCog(commands.Cog):
         conn.close()
 
         expires_str = datetime.fromtimestamp(expires_at).strftime("%d/%m/%Y %H:%M")
-        await ctx.reply(f"✅ Đã thêm/cập nhật Custom Role {role.mention} cho {user.mention}!\n⏳ **Thời hạn:** `{days} ngày` (Hết hạn vào: `{expires_str}`)")
-        
-        # Log sang MOD_LOGS
+        await interaction.response.send_message(f"✅ Đã thêm/cập nhật Custom Role {role.mention} cho {user.mention}!\n⏳ **Thời hạn:** `{days_int} ngày` (Hết hạn vào: `{expires_str}`)")
+
         await self.log_to_mod_logs(
-            ctx.guild, "➕ Thêm Custom Role Mới",
-            f"• **Staff thực hiện:** {ctx.author.mention}\n• **Role:** {role.mention} (`{role.id}`)\n• **Chủ sở hữu:** {user.mention} (`{user.id}`)\n• **Thời gian:** `{days} ngày` (Hết hạn: {expires_str})",
+            interaction.guild, "➕ Thêm Custom Role Mới",
+            f"• **Staff thực hiện:** {interaction.user.mention}\n• **Role:** {role.mention} (`{role.id}`)\n• **Chủ sở hữu:** {user.mention} (`{user.id}`)\n• **Thời gian:** `{days_int} ngày` (Hết hạn: {expires_str})",
             0x57F287
         )
 
-    # --- LỆNH !RENEW ---
-    @commands.command(name="renew")
-    @is_staff()
-    async def renew(self, ctx, role: discord.Role = None, time_str: str = None):
-        """Gia hạn thời gian cho Custom Role (vd: !renew @Role 15d)"""
-        if not role or not time_str:
-            return await ctx.reply(
-                "❌ **Sai cú pháp!**\n"
-                "👉 **Hướng dẫn sử dụng:** `!renew <@Role> <Thời_gian_gia_hạn>`\n"
-                "💡 **Ví dụ:** `!renew @VIP 15d` (Gia hạn thêm 15 ngày)"
-            )
+    # --- /customrole renew ---
+    @role_group.command(name="renew", description="Gia hạn thời gian cho Custom Role (VD: 15d hoặc 15)")
+    @app_commands.describe(role="Role cần gia hạn", days="Số ngày cộng thêm (VD: 15d)")
+    async def role_renew(self, interaction: discord.Interaction, role: discord.Role, days: str):
+        if not is_staff_user(interaction):
+            return await interaction.response.send_message("⛔ Bạn không có quyền (Staff) để sử dụng lệnh này!", ephemeral=True)
 
         try:
-            days = parse_days(time_str)
-            if days <= 0: return await ctx.reply("❌ Số ngày gia hạn phải lớn hơn 0!")
+            days_int = parse_days(days)
+            if days_int <= 0:
+                return await interaction.response.send_message("❌ Số ngày gia hạn phải lớn hơn 0!", ephemeral=True)
         except ValueError:
-            return await ctx.reply("❌ **Định dạng thời gian không hợp lệ!**\n👉 Vui lòng nhập số ngày kèm chữ `d` (Ví dụ: `7d`, `12d`, `30d`).")
+            return await interaction.response.send_message("❌ **Định dạng thời gian không hợp lệ!**", ephemeral=True)
 
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
@@ -299,51 +298,42 @@ class CustomRolesCog(commands.Cog):
 
         if not row:
             conn.close()
-            return await ctx.reply(f"❌ Role {role.mention} không tồn tại trong Database Custom Role!")
+            return await interaction.response.send_message(f"❌ Role {role.mention} không tồn tại trong Database Custom Role!", ephemeral=True)
 
         user_id, current_expires = row
-        # Nếu đã hết hạn trong quá khứ thì cộng từ thời điểm hiện tại, ngược lại cộng dồn vào hạn cũ
         base_time = max(int(time.time()), current_expires)
-        new_expires = base_time + (days * 86400)
+        new_expires = base_time + (days_int * 86400)
 
-        # Cập nhật hạn mới và reset trạng thái notified về 0
         cursor.execute("UPDATE custom_roles SET expires_at = ?, notified = 0 WHERE role_id = ?", (new_expires, role.id))
         conn.commit()
         conn.close()
 
-        # Đảm bảo user vẫn giữ role trên server
-        member = ctx.guild.get_member(user_id)
+        member = interaction.guild.get_member(user_id)
         if member and role not in member.roles:
             try: await member.add_roles(role)
             except: pass
 
         expires_str = datetime.fromtimestamp(new_expires).strftime("%d/%m/%Y %H:%M")
-        await ctx.reply(f"🔄 Đã gia hạn thành công Role {role.mention} thêm **`{days} ngày`**!\n📅 **Hạn mới:** `{expires_str}`")
-        
-        # Log sang MOD_LOGS
+        await interaction.response.send_message(f"🔄 Đã gia hạn thành công Role {role.mention} thêm **`{days_int} ngày`**!\n📅 **Hạn mới:** `{expires_str}`")
+
         await self.log_to_mod_logs(
-            ctx.guild, "🔄 Gia Hạn Custom Role",
-            f"• **Staff thực hiện:** {ctx.author.mention}\n• **Role:** {role.mention} (`{role.id}`)\n• **Chủ sở hữu:** <@{user_id}>\n• **Gia hạn thêm:** `{days} ngày`\n• **Hạn mới:** `{expires_str}`",
+            interaction.guild, "🔄 Gia Hạn Custom Role",
+            f"• **Staff thực hiện:** {interaction.user.mention}\n• **Role:** {role.mention} (`{role.id}`)\n• **Chủ sở hữu:** <@{user_id}>\n• **Gia hạn thêm:** `{days_int} ngày`\n• **Hạn mới:** `{expires_str}`",
             0xFEE75C
         )
 
-    # --- LỆNH !RXOA ---
-    @commands.command(name="rxoa")
-    @is_staff()
-    async def rxoa(self, ctx, role: discord.Role = None):
-        """Xóa role khỏi server và bỏ theo dõi trong database"""
-        if not role:
-            return await ctx.reply(
-                "❌ **Sai cú pháp!**\n"
-                "👉 **Hướng dẫn sử dụng:** `!rxoa <@Role>`\n"
-                "💡 **Ví dụ:** `!rxoa @VIP`"
-            )
+    # --- /customrole delete ---
+    @role_group.command(name="delete", description="Xóa role khỏi server và bỏ theo dõi trong database")
+    @app_commands.describe(role="Role cần xóa")
+    async def role_delete(self, interaction: discord.Interaction, role: discord.Role):
+        if not is_staff_user(interaction):
+            return await interaction.response.send_message("⛔ Bạn không có quyền (Staff) để sử dụng lệnh này!", ephemeral=True)
 
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute("SELECT user_id FROM custom_roles WHERE role_id = ?", (role.id,))
         row = cursor.fetchone()
-        
+
         if row:
             cursor.execute("DELETE FROM custom_roles WHERE role_id = ?", (role.id,))
             conn.commit()
@@ -354,24 +344,22 @@ class CustomRolesCog(commands.Cog):
         owner_id = row[0] if row else None
         owner_str = f"<@{owner_id}>" if owner_id else "Không xác định"
 
-        # Xóa Role khỏi máy chủ Discord
         try:
-            await role.delete(reason=f"Staff {ctx.author} đã xóa Custom Role qua lệnh !rxoa")
-            await ctx.reply(f"🗑️ Đã xóa hoàn toàn Role **{role_name}** khỏi Máy chủ và Database!")
+            await role.delete(reason=f"Staff {interaction.user} đã xóa Custom Role qua lệnh /customrole delete")
+            await interaction.response.send_message(f"🗑️ Đã xóa hoàn toàn Role **{role_name}** khỏi Máy chủ và Database!")
         except discord.Forbidden:
-            await ctx.reply(f"⚠️ Đã xóa Role **{role_name}** khỏi Database, nhưng Bot không có quyền xóa Role này trên Server! Hãy xóa thủ công trong Cài đặt Server.")
+            await interaction.response.send_message(f"⚠️ Đã xóa Role **{role_name}** khỏi Database, nhưng Bot không có quyền xóa Role này trên Server!", ephemeral=True)
         except discord.HTTPException as e:
-            await ctx.reply(f"⚠️ Đã xóa khỏi Database nhưng gặp lỗi khi xóa role trên Server: {e}")
+            await interaction.response.send_message(f"⚠️ Đã xóa khỏi Database nhưng gặp lỗi khi xóa role trên Server: {e}", ephemeral=True)
 
-        # Log sang MOD_LOGS
         await self.log_to_mod_logs(
-            ctx.guild, "🗑️ Xóa Custom Role",
-            f"• **Staff thực hiện:** {ctx.author.mention}\n• **Role đã xóa:** **{role_name}** (`{role_id}`)\n• **Chủ sở hữu:** {owner_str}",
+            interaction.guild, "🗑️ Xóa Custom Role",
+            f"• **Staff thực hiện:** {interaction.user.mention}\n• **Role đã xóa:** **{role_name}** (`{role_id}`)\n• **Chủ sở hữu:** {owner_str}",
             0xED4245
         )
 
     # ==========================================
-    # 4. TASK KIỂM TRA HẾT HẠN & THÔNG BÁO DMS (Chạy mỗi 30 phút)
+    # 5. TASK KIỂM TRA HẾT HẠN & THÔNG BÁO DMS
     # ==========================================
     @tasks.loop(minutes=30)
     async def check_expires_task(self):
@@ -381,8 +369,7 @@ class CustomRolesCog(commands.Cog):
 
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        
-        # Tìm các role còn <= 1 ngày hạn và chưa thông báo (notified == 0)
+
         cursor.execute("SELECT role_id, user_id, expires_at FROM custom_roles WHERE expires_at <= ? AND expires_at > ? AND notified = 0", (one_day_later, now))
         expiring_soon = cursor.fetchall()
 
@@ -392,8 +379,6 @@ class CustomRolesCog(commands.Cog):
                 member = guild.get_member(user_id)
                 if role and member:
                     expires_str = datetime.fromtimestamp(expires_at).strftime("%d/%m/%Y %H:%M")
-                    
-                    # Gửi DMS thông báo cho chủ sở hữu
                     try:
                         dm_embed = discord.Embed(
                             title="⚠️ Thông Báo Sắp Hết Hạn Custom Role",
@@ -406,16 +391,14 @@ class CustomRolesCog(commands.Cog):
                         )
                         await member.send(embed=dm_embed)
                     except discord.Forbidden:
-                        print(f"⚠️ Không thể gửi DMS cho user {user_id} (Họ đã tắt nhận tin nhắn người lạ).")
+                        pass
 
-                    # Log thông báo lên MOD_LOGS
                     await self.log_to_mod_logs(
                         guild, "⏰ Thông Báo Gia Hạn Custom Role",
                         f"• **Role:** {role.mention} (`{role.id}`)\n• **Chủ sở hữu:** {member.mention} (`{member.id}`)\n• **Hạn cuối:** `{expires_str}`\n• **Trạng thái:** Đã gửi hệ thống cảnh báo DMS trước 1 ngày.",
                         0xFEE75C
                     )
 
-                    # Đánh dấu đã gửi cảnh báo để không gửi lại liên tục
                     cursor.execute("UPDATE custom_roles SET notified = 1 WHERE role_id = ?", (role_id,))
                     conn.commit()
 

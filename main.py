@@ -3,6 +3,7 @@ import asyncio
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
+import database as db
 
 # 1. Tải cấu hình từ file .env
 load_dotenv()
@@ -25,6 +26,7 @@ class LavieBot(commands.Bot):
 
     async def setup_hook(self):
         """Hàm tự động chạy trước khi bot kết nối để tải các module (Cogs)"""
+        db.init_db()
         print("⏳ Đang tải hệ thống các module (Cogs)...")
         
         # Kiểm tra và tạo thư mục cogs nếu chưa tồn tại

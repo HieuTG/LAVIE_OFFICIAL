@@ -1,5 +1,6 @@
 import discord
 from discord.ext import commands, tasks
+from discord import app_commands
 import sqlite3
 import os
 import time
@@ -9,22 +10,24 @@ import asyncio
 # ==========================================
 # 0. HÀM KIỂM TRA QUYỀN STAFF & XỬ LÝ THỜI GIAN
 # ==========================================
+def is_staff_user(user: discord.Member) -> bool:
+    """Kiểm tra người dùng có sở hữu role trong ROLES_STAFF hoặc là Admin không"""
+    if user.guild_permissions.administrator:
+        return True
+    roles_env = os.getenv("ROLES_STAFF", "")
+    if not roles_env:
+        return False
+    staff_role_ids = [int(r.strip()) for r in roles_env.split(",") if r.strip().isdigit()]
+    user_role_ids = [r.id for r in user.roles]
+    return any(role_id in staff_role_ids for role_id in user_role_ids)
+
 def is_staff():
-    """Kiểm tra người dùng có sở hữu role trong ROLES_STAFF hay không"""
+    """Predicate Check dành cho Prefix Commands"""
     async def predicate(ctx):
-        roles_env = os.getenv("ROLES_STAFF", "")
-        if not roles_env:
-            await ctx.reply("❌ **Lỗi cấu hình:** Chưa thiết lập biến `ROLES_STAFF` trong file `.env`!", delete_after=10)
-            return False
-        
-        staff_role_ids = [int(r.strip()) for r in roles_env.split(",") if r.strip().isdigit()]
-        user_role_ids = [r.id for r in ctx.author.roles]
-        
-        if any(role_id in staff_role_ids for role_id in user_role_ids) or ctx.author.guild_permissions.administrator:
+        if is_staff_user(ctx.author):
             return True
-        else:
-            await ctx.reply("⛔ Bạn không có quyền (Staff) để sử dụng lệnh này!", delete_after=10)
-            return False
+        await ctx.reply("⛔ Bạn không có quyền (Staff) để sử dụng lệnh này!", delete_after=10)
+        return False
     return commands.check(predicate)
 
 def parse_duration(time_str: str) -> int:
@@ -65,77 +68,65 @@ def extract_ids_from_link(link_or_id: str):
         return None, int(link_or_id)
     return None, None
 
-
 # ==========================================
-# 1. GIAO DIỆN GIVEAWAY COMPONENT V2
+# 1. TẠO EMBED VÀ NÚT BẤM (GIAO DIỆN EMBED)
 # ==========================================
-class GiveawayView(discord.ui.LayoutView):
-    def __init__(self, prize: str, end_time: int, host_id: int, required_role_id: int = None, count: int = 0, winners_count: int = 1, ended: bool = False, winner_text: str = None):
-        super().__init__(timeout=None)
-        self.prize = prize
-        self.end_time = end_time
-        self.host_id = host_id
-        self.required_role_id = required_role_id
-        self.count = count
-        self.winners_count = winners_count
-        self.ended = ended
-        self.winner_text = winner_text
-        
-        self.build_view()
-
-    def build_view(self):
-        self.clear_items()
-        
-        end_str = f"<t:{self.end_time}:R> (<t:{self.end_time}:f>)"
-        role_req_str = f"<@&{self.required_role_id}>" if self.required_role_id else "Tất cả mọi người"
-        host_str = f"<@{self.host_id}>"
-        
-        if not self.ended:
-            header_text = "# <a:event:1530563975828209664> GIVEAWAY <a:event:1530563975828209664>"
-            status_text = (
-                f"### <:holiday_crate:1523749995059216494> **Phần thưởng:** `{self.prize}`\n\n"
-                f"• **Người tạo:** {host_str}\n"
-                f"• **Số giải:** `{self.winners_count}` người thắng\n"
-                f"• **Kết thúc:** {end_str}\n"
-                f"• **Yêu cầu Role:** {role_req_str}\n"
-                f"• **Số người tham gia:** `{self.count}` người\n\n"
-                f"-# Bấm nút bên dưới để tham gia (Bấm lần nữa để rời khỏi)"
-            )
-            btn_label = f"Tham gia ({self.count})"
-            btn_style = discord.ButtonStyle.success
-            btn_disabled = False
-        else:
-            header_text = "# <a:event:1530563975828209664> GIVEAWAY ĐÃ KẾT THÚC <a:event:1530563975828209664>"
-            status_text = (
-                f"### <:holiday_crate:1523749995059216494> **Phần thưởng:** `{self.prize}`\n\n"
-                f"• **Người tạo:** {host_str}\n"
-                f"• **Số giải:** `{self.winners_count}` người thắng\n"
-                f"• **Người thắng cuộc:** {self.winner_text}\n"
-                f"• **Tổng người tham gia:** `{self.count}` người\n"
-                f"• **Đã kết thúc lúc:** <t:{self.end_time}:f>"
-            )
-            btn_label = "Đã kết thúc"
-            btn_style = discord.ButtonStyle.secondary
-            btn_disabled = True
-
-        container = discord.ui.Container(
-            discord.ui.TextDisplay(content=header_text),
-            discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small),
-            discord.ui.TextDisplay(content=status_text),
-            discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small),
-            discord.ui.ActionRow(
-                discord.ui.Button(
-                    style=btn_style,
-                    label=btn_label,
-                    emoji="<a:tada_right:1523846292105724035>",
-                    disabled=btn_disabled,
-                    custom_id="ga_button_join"
-                )
+def build_giveaway_embed(prize: str, end_time: int, host_id: int, required_role_id: int = None, count: int = 0, winners_count: int = 1, ended: bool = False, winner_text: str = None, guild: discord.Guild = None) -> discord.Embed:
+    icon_url = guild.icon.url if (guild and guild.icon) else None
+    
+    if not ended:
+        embed = discord.Embed(
+            title="<:lavie1:1534553030937018530><:lavie2:1534553133446070482><:lavie3:1534553194502557718><:lavie4:1534553262504808488><:lavie5:1534553319111000085>",
+            description=(
+                f"# <a:h1h441:1504391747201925162> GIVEAWAY <a:h1h440:1504391680898367538>\n\n"
+                f"## <:holiday_crate:1523749995059216494> **Phần thưởng:** `{prize}`\n\n"
+                f"• **Người tạo:** <@{host_id}>\n"
+                f"• **Số giải:** `{winners_count}` người thắng\n"
+                f"• **Kết thúc:** <t:{end_time}:R> (<t:{end_time}:f>)\n"
+                f"• **Yêu cầu Role:** {f'<@&{required_role_id}>' if required_role_id else 'Tất cả mọi người'}\n"
+                f"• **Số người tham gia:** `{count}` người\n\n"
+                f"**NHỚ LÀM REQ ( NẾU CÓ ) TRƯỚC KHI THAM GIA!!!<a:0013_redfish:1507669400994447400>**"
             ),
-            discord.ui.TextDisplay(content="-# <:Lavie:1531334063816839298> <:Lavie2:1531334114714714366> <:Lavie3:1531334146650148977> <:Lavie4:1531334188219891872> <:Lavie5:1531334235494027364> • Giveaway System")
+            color=discord.Color.from_str("#00FFFF")
         )
-        self.add_item(container)
+        embed.set_footer(text="L A V I E • Bấm nút bên dưới để tham gia", icon_url=icon_url)
+    else:
+        embed = discord.Embed(
+            title="<:lavie1:1534553030937018530><:lavie2:1534553133446070482><:lavie3:1534553194502557718><:lavie4:1534553262504808488><:lavie5:1534553319111000085>",
+            description=(
+                f"# GIVEAWAY ĐÃ KẾT THÚC\n\n"
+                f"## <:holiday_crate:1523749995059216494> **Phần thưởng:** `{prize}`\n\n"
+                f"• **Người tạo:** <@{host_id}>\n"
+                f"• **Số giải:** `{winners_count}` người thắng\n"
+                f"• **Người thắng cuộc:** {winner_text}\n"
+                f"• **Tổng người tham gia:** `{count}` người\n"
+                f"• **Đã kết thúc lúc:** <t:{end_time}:f>"
+            ),
+            color=discord.Color.from_str("#00FFFF")
+        )
+        embed.set_footer(text="L A V I E • Đã kết thúc", icon_url=icon_url)
+    return embed
 
+class GiveawayJoinView(discord.ui.View):
+    def __init__(self, count: int = 0, ended: bool = False):
+        super().__init__(timeout=None)
+        if ended:
+            btn = discord.ui.Button(
+                style=discord.ButtonStyle.secondary,
+                label="Đã kết thúc",
+                emoji="🔒",
+                disabled=True,
+                custom_id="ga_button_join"
+            )
+        else:
+            btn = discord.ui.Button(
+                style=discord.ButtonStyle.success,
+                label=f"Tham gia ({count})",
+                emoji="<a:tada_right:1523846292105724035>",
+                disabled=False,
+                custom_id="ga_button_join"
+            )
+        self.add_item(btn)
 
 # ==========================================
 # 2. MODULE COG CHÍNH (GIVEAWAY & NUKE)
@@ -148,7 +139,7 @@ class GiveawayNukeCog(commands.Cog):
         self.check_giveaway_task.start()
 
     def init_db(self):
-        """Khởi tạo file cơ sở dữ liệu cho Giveaway"""
+        """Khởi tạo file cơ sở dữ liệu cho Giveaway và tự động nâng cấp nếu thiếu cột"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute("""
@@ -164,15 +155,6 @@ class GiveawayNukeCog(commands.Cog):
                 ended INTEGER DEFAULT 0
             )
         """)
-        try:
-            cursor.execute("ALTER TABLE giveaways ADD COLUMN winners_count INTEGER DEFAULT 1")
-        except sqlite3.OperationalError:
-            pass
-        try:
-            cursor.execute("ALTER TABLE giveaways ADD COLUMN host_id INTEGER DEFAULT 0")
-        except sqlite3.OperationalError:
-            pass
-            
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS ga_participants (
                 message_id INTEGER NOT NULL,
@@ -180,6 +162,13 @@ class GiveawayNukeCog(commands.Cog):
                 PRIMARY KEY (message_id, user_id)
             )
         """)
+
+        cursor.execute("PRAGMA table_info(giveaways)")
+        columns = [column[1] for column in cursor.fetchall()]
+        if "winners_count" not in columns:
+            cursor.execute("ALTER TABLE giveaways ADD COLUMN winners_count INTEGER DEFAULT 1")
+            print("🛠️ [DATABASE] Đã tự động bổ sung cột 'winners_count' vào bảng giveaways thành công!")
+
         conn.commit()
         conn.close()
 
@@ -191,97 +180,94 @@ class GiveawayNukeCog(commands.Cog):
         conn.close()
         return count
 
-    # --- LỆNH !GIVEAWAY (!GA) DẠNG GROUP ---
-    @commands.group(name="giveaway", aliases=["ga"], invoke_without_command=True)
-    @is_staff()
-    async def create_giveaway(self, ctx):
-        """Cú pháp tạo: !ga <thời gian> <số người thắng> <tên giải thưởng> [-r <role>]"""
-        content = ctx.message.content
-        parts = content.split(" ", 1)
-        
-        if len(parts) < 2:
-            return await ctx.reply(
-                "❌ **Sai cú pháp!**\n"
-                "👉 **Tạo Giveaway:** `!ga <Thời gian> <Số người thắng> <Phần thưởng> [-r <@Role>]`\n"
-                "👉 **Kết thúc sớm:** `!ga end <Link tin nhắn>`\n"
-                "👉 **Reroll người thắng:** `!ga reroll <Link tin nhắn>`"
-            )
+    # ==========================================
+    # 3. SLASH COMMAND: /giveaway start
+    # ==========================================
+    giveaway_group = app_commands.Group(name="giveaway", description="Lệnh quản lý Giveaway")
 
-        args_str = parts[1].strip()
-        required_role = None
+    @giveaway_group.command(name="start", description="Tạo một Giveaway mới")
+    @app_commands.describe(
+        time_str="Thời gian diễn ra (Ví dụ: 30s, 10m, 2h, 1d)",
+        prize="Tên phần thưởng",
+        winners="Số lượng người chiến thắng (Mặc định: 1)",
+        required_role="Yêu cầu Role để tham gia (Tùy chọn)"
+    )
+    async def giveaway_start_slash(
+        self,
+        interaction: discord.Interaction,
+        time_str: str,
+        prize: str,
+        winners: int = 1,
+        required_role: discord.Role = None
+    ):
+        if not is_staff_user(interaction.user):
+            return await interaction.response.send_message("⛔ Bạn không có quyền (Staff) để sử dụng lệnh này!", ephemeral=True)
 
-        if "-r" in args_str:
-            main_part, role_part = args_str.split("-r", 1)
-            role_id_str = ''.join(filter(str.isdigit, role_part))
-            if role_id_str:
-                required_role = ctx.guild.get_role(int(role_id_str))
-            if not required_role:
-                return await ctx.reply("❌ **Không tìm thấy Role yêu cầu!** Hãy tag đúng role sau cờ `-r`.")
-        else:
-            main_part = args_str
-
-        tokens = main_part.strip().split(" ", 2)
-        if len(tokens) < 3:
-            return await ctx.reply("❌ **Thiếu thông tin!** Vui lòng nhập đủ: `<Thời gian> <Số người thắng> <Phần thưởng>`.")
-
-        time_str = tokens[0].strip()
-        winners_str = tokens[1].strip()
-        prize = tokens[2].strip()
-
-        if not winners_str.isdigit() or int(winners_str) < 1:
-            return await ctx.reply("❌ **Số người thắng** phải là một số nguyên lớn hơn 0 (Ví dụ: 1, 2, 3...).")
-        winners_count = int(winners_str)
+        if winners < 1:
+            return await interaction.response.send_message("❌ **Số người thắng** phải lớn hơn 0!", ephemeral=True)
 
         try:
             duration = parse_duration(time_str)
             if duration < 10:
-                return await ctx.reply("❌ Thời gian Giveaway tối thiểu phải từ **10 giây** trở lên!")
+                return await interaction.response.send_message("❌ Thời gian Giveaway tối thiểu phải từ **10 giây** trở lên!", ephemeral=True)
         except ValueError:
-            return await ctx.reply("❌ **Định dạng thời gian không hợp lệ!**\n👉 Dùng các đuôi `s` (giây), `m` (phút), `h` (giờ), `d` (ngày). Ví dụ: `30m`, `2h`, `1d`.")
+            return await interaction.response.send_message("❌ **Định dạng thời gian không hợp lệ!** Dùng các đuôi `s`, `m`, `h`, `d` (Ví dụ: 30m, 2h).", ephemeral=True)
 
         end_time = int(time.time()) + duration
         req_role_id = required_role.id if required_role else None
-        host_id = ctx.author.id
+        host_id = interaction.user.id
 
-        view = GiveawayView(prize=prize, end_time=end_time, host_id=host_id, required_role_id=req_role_id, count=0, winners_count=winners_count)
-        ga_msg = await ctx.send(view=view)
+        embed = build_giveaway_embed(prize, end_time, host_id, req_role_id, count=0, winners_count=winners, guild=interaction.guild)
+        view = GiveawayJoinView(count=0, ended=False)
+
+        await interaction.response.send_message(embed=embed, view=view)
+        ga_msg = await interaction.original_response()
 
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO giveaways (message_id, channel_id, guild_id, host_id, prize, winners_count, end_time, required_role_id, ended)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
-        """, (ga_msg.id, ctx.channel.id, ctx.guild.id, host_id, prize, winners_count, end_time, req_role_id))
+        """, (ga_msg.id, interaction.channel_id, interaction.guild_id, host_id, prize, winners, end_time, req_role_id))
         conn.commit()
         conn.close()
 
-        try:
-            await ctx.message.delete()
-        except:
-            pass
+    # ==========================================
+    # 4. PREFIX COMMANDS (!ga, !ga end, !ga reroll)
+    # ==========================================
+    @commands.group(name="giveaway", aliases=["ga"], invoke_without_command=True)
+    @is_staff()
+    async def create_giveaway(self, ctx):
+        """Hướng dẫn khi gõ !ga sai cú pháp"""
+        await ctx.reply(
+            "👉 **Tạo Giveaway:** Dùng lệnh Slash `/giveaway start`\n"
+            "👉 **Kết thúc:** `!ga end [Link/ID tin nhắn]` (Hoặc để trống cho GA gần nhất)\n"
+            "👉 **Quay lại:** `!ga reroll [Link/ID tin nhắn]` (Hoặc để trống cho GA gần nhất)"
+        )
 
-    # --- LỆNH LỆNH !GA END <LINK/ID> ---
+    # --- LỆNH !GA END ---
     @create_giveaway.command(name="end")
     @is_staff()
     async def end_giveaway(self, ctx, message_link: str = None):
-        """Kết thúc ngay lập tức một Giveaway đang diễn ra"""
-        if not message_link:
-            return await ctx.reply("❌ **Thiếu thông tin!** Dùng: `!ga end <Link tin nhắn hoặc ID tin nhắn Giveaway>`")
-
-        _, msg_id = extract_ids_from_link(message_link)
-        if not msg_id:
-            return await ctx.reply("❌ **Link tin nhắn hoặc Message ID không hợp lệ!**")
-
+        """Kết thúc ngay lập tức một Giveaway (Gần nhất hoặc theo ID/Link)"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        cursor.execute("SELECT channel_id, guild_id, host_id, prize, end_time, required_role_id, winners_count, ended FROM giveaways WHERE message_id = ?", (msg_id,))
-        row = cursor.fetchone()
 
+        if message_link:
+            _, msg_id = extract_ids_from_link(message_link)
+            if not msg_id:
+                conn.close()
+                return await ctx.reply("❌ **Link hoặc ID tin nhắn không hợp lệ!**")
+            cursor.execute("SELECT message_id, channel_id, guild_id, host_id, prize, end_time, required_role_id, winners_count, ended FROM giveaways WHERE message_id = ?", (msg_id,))
+        else:
+            cursor.execute("SELECT message_id, channel_id, guild_id, host_id, prize, end_time, required_role_id, winners_count, ended FROM giveaways WHERE channel_id = ? AND ended = 0 ORDER BY message_id DESC LIMIT 1", (ctx.channel.id,))
+
+        row = cursor.fetchone()
         if not row:
             conn.close()
-            return await ctx.reply("❌ **Không tìm thấy Giveaway** tương ứng với Link/ID này trong cơ sở dữ liệu!")
+            return await ctx.reply("❌ **Không tìm thấy Giveaway đang diễn ra nào!**")
 
-        channel_id, guild_id, host_id, prize, end_time, req_role_id, winners_count, ended = row
+        msg_id, channel_id, guild_id, host_id, prize, end_time, req_role_id, winners_count, ended = row
 
         if ended == 1:
             conn.close()
@@ -302,18 +288,14 @@ class GiveawayNukeCog(commands.Cog):
         conn.commit()
         conn.close()
 
-        # Cập nhật lại giao diện tin nhắn Giveaway
         channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
         msg = None
         if channel:
             try:
                 msg = await channel.fetch_message(msg_id)
-                view = GiveawayView(
-                    prize=prize, end_time=end_time, host_id=host_id,
-                    required_role_id=req_role_id, count=count, winners_count=winners_count, ended=True,
-                    winner_text=winner_text
-                )
-                await msg.edit(view=view)
+                embed = build_giveaway_embed(prize, end_time, host_id, req_role_id, count, winners_count, ended=True, winner_text=winner_text, guild=ctx.guild)
+                view = GiveawayJoinView(count=count, ended=True)
+                await msg.edit(embed=embed, view=view)
             except:
                 pass
 
@@ -323,11 +305,7 @@ class GiveawayNukeCog(commands.Cog):
                     f"Hãy mở Ticket tại <#1507407585962361078> trong vòng 24h để nhận thưởng nhé!"
                 )
             else:
-                announcement = (
-                    f"🎁 **Phần thưởng:** `{prize}`\n"
-                    f"👤 **Người tạo:** <@{host_id}>\n"
-                    f"• *Không có ai tham gia Giveaway này.*"
-                )
+                announcement = f"🎁 **Phần thưởng:** `{prize}`\n👤 **Người tạo:** <@{host_id}>\n• *Không có ai tham gia Giveaway này.*"
 
             try:
                 if msg:
@@ -339,28 +317,29 @@ class GiveawayNukeCog(commands.Cog):
 
         await ctx.reply("🛑 **Đã kết thúc Giveaway thành công!**")
 
-    # --- LỆNH !GA REROLL <LINK/ID> ---
+    # --- LỆNH !GA REROLL ---
     @create_giveaway.command(name="reroll")
     @is_staff()
     async def reroll_giveaway(self, ctx, message_link: str = None):
-        """Quay lại người chiến thắng mới cho Giveaway đã kết thúc"""
-        if not message_link:
-            return await ctx.reply("❌ **Thiếu thông tin!** Dùng: `!ga reroll <Link tin nhắn hoặc ID tin nhắn Giveaway>`")
-
-        _, msg_id = extract_ids_from_link(message_link)
-        if not msg_id:
-            return await ctx.reply("❌ **Link tin nhắn hoặc Message ID không hợp lệ!**")
-
+        """Quay lại người chiến thắng (Gần nhất hoặc theo ID/Link)"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        cursor.execute("SELECT channel_id, guild_id, host_id, prize, end_time, required_role_id, winners_count, ended FROM giveaways WHERE message_id = ?", (msg_id,))
-        row = cursor.fetchone()
 
+        if message_link:
+            _, msg_id = extract_ids_from_link(message_link)
+            if not msg_id:
+                conn.close()
+                return await ctx.reply("❌ **Link hoặc ID tin nhắn không hợp lệ!**")
+            cursor.execute("SELECT message_id, channel_id, guild_id, host_id, prize, winners_count FROM giveaways WHERE message_id = ?", (msg_id,))
+        else:
+            cursor.execute("SELECT message_id, channel_id, guild_id, host_id, prize, winners_count FROM giveaways WHERE channel_id = ? AND ended = 1 ORDER BY message_id DESC LIMIT 1", (ctx.channel.id,))
+
+        row = cursor.fetchone()
         if not row:
             conn.close()
-            return await ctx.reply("❌ **Không tìm thấy Giveaway** tương ứng với Link/ID này trong cơ sở dữ liệu!")
+            return await ctx.reply("❌ **Không tìm thấy Giveaway đã kết thúc nào!**")
 
-        channel_id, guild_id, host_id, prize, end_time, req_role_id, winners_count, ended = row
+        msg_id, channel_id, guild_id, host_id, prize, winners_count = row
 
         cursor.execute("SELECT user_id FROM ga_participants WHERE message_id = ?", (msg_id,))
         participants = [r[0] for r in cursor.fetchall()]
@@ -368,7 +347,7 @@ class GiveawayNukeCog(commands.Cog):
 
         count = len(participants)
         if count == 0:
-            return await ctx.reply("❌ **Không thể Reroll!** Không có ai bấm tham gia Giveaway này.")
+            return await ctx.reply("❌ **Không thể Reroll!** Không có ai tham gia Giveaway này.")
 
         num_winners = min(count, winners_count if winners_count else 1)
         winners_list = random.sample(participants, num_winners)
@@ -397,10 +376,12 @@ class GiveawayNukeCog(commands.Cog):
 
         await ctx.reply(f"🎲 **Đã Reroll thành công!** Người chiến thắng mới: {winner_text}")
 
-    # --- SỰ KIỆN BẤM NÚT THAM GIA / RỜI GIVEAWAY ---
+    # ==========================================
+    # 5. XỬ LÝ BẤM NÚT THAM GIA / RỜI GA
+    # ==========================================
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction):
-        if not interaction.type == discord.InteractionType.component:
+        if interaction.type != discord.InteractionType.component:
             return
         
         custom_id = interaction.data.get("custom_id", "")
@@ -438,9 +419,10 @@ class GiveawayNukeCog(commands.Cog):
             count = self.get_participant_count(message_id)
             conn.close()
 
-            view = GiveawayView(prize=prize, end_time=end_time, host_id=host_id, required_role_id=required_role_id, count=count, winners_count=winners_count)
+            embed = build_giveaway_embed(prize, end_time, host_id, required_role_id, count, winners_count, guild=interaction.guild)
+            view = GiveawayJoinView(count=count, ended=False)
             try:
-                await interaction.message.edit(view=view)
+                await interaction.message.edit(embed=embed, view=view)
             except:
                 pass
 
@@ -451,15 +433,18 @@ class GiveawayNukeCog(commands.Cog):
             count = self.get_participant_count(message_id)
             conn.close()
 
-            view = GiveawayView(prize=prize, end_time=end_time, host_id=host_id, required_role_id=required_role_id, count=count, winners_count=winners_count)
+            embed = build_giveaway_embed(prize, end_time, host_id, required_role_id, count, winners_count, guild=interaction.guild)
+            view = GiveawayJoinView(count=count, ended=False)
             try:
-                await interaction.message.edit(view=view)
+                await interaction.message.edit(embed=embed, view=view)
             except:
                 pass
 
             await interaction.response.send_message("🎉 **Bạn đã tham gia Giveaway thành công!** Chúc bạn may mắn!", ephemeral=True)
 
-    # --- TASK TỰ ĐỘNG KIỂM TRA GIVEAWAY HẾT HẠN & QUAY THƯỜNG ---
+    # ==========================================
+    # 6. TASK TỰ ĐỘNG TÍNH GIVEAWAY HẾT HẠN
+    # ==========================================
     @tasks.loop(seconds=15)
     async def check_giveaway_task(self):
         await self.bot.wait_until_ready()
@@ -495,12 +480,9 @@ class GiveawayNukeCog(commands.Cog):
             msg = None
             try:
                 msg = await channel.fetch_message(msg_id)
-                view = GiveawayView(
-                    prize=prize, end_time=end_time, host_id=host_id,
-                    required_role_id=req_role_id, count=count, winners_count=winners_count, ended=True,
-                    winner_text=winner_text
-                )
-                await msg.edit(view=view)
+                embed = build_giveaway_embed(prize, end_time, host_id, req_role_id, count, winners_count, ended=True, winner_text=winner_text, guild=guild)
+                view = GiveawayJoinView(count=count, ended=True)
+                await msg.edit(embed=embed, view=view)
             except:
                 pass
 
@@ -510,11 +492,7 @@ class GiveawayNukeCog(commands.Cog):
                     f"Hãy mở Ticket tại <#1507407585962361078> trong vòng 24h để nhận thưởng nhé!"
                 )
             else:
-                announcement = (
-                    f"🎁 **Phần thưởng:** `{prize}`\n"
-                    f"👤 **Người tạo:** <@{host_id}>\n"
-                    f"• *Không có ai tham gia Giveaway này.*"
-                )
+                announcement = f"🎁 **Phần thưởng:** `{prize}`\n👤 **Người tạo:** <@{host_id}>\n• *Không có ai tham gia Giveaway này.*"
 
             try:
                 if msg:
@@ -526,11 +504,13 @@ class GiveawayNukeCog(commands.Cog):
 
         conn.close()
 
-    # --- LỆNH !NUKE GIỮ NGUYÊN BẢN CỦA BẠN ---
+    # ==========================================
+    # 7. LỆNH !NUKE
+    # ==========================================
     @commands.command(name="nuke")
     @is_staff()
     async def nuke_channel(self, ctx):
-        """Xóa toàn bộ tin nhắn kênh tức thì (Gửi tin nhắn mẫu Lavie mới)"""
+        """Xóa toàn bộ tin nhắn kênh tức thì"""
         allowed_cat_env = os.getenv("GIVEAWAY_CATEGORY", "").strip()
         if allowed_cat_env:
             allowed_cat_ids = [int(cid.strip()) for cid in allowed_cat_env.split(",") if cid.strip().isdigit()]
@@ -565,7 +545,6 @@ class GiveawayNukeCog(commands.Cog):
                 if e.status >= 500 and attempt < 2:
                     await asyncio.sleep(2)
                     continue
-                
                 try:
                     if new_channel:
                         await new_channel.send(content=f"❌ **Lỗi máy chủ Discord ({e.status}):** Không thể hoàn tất Nuke. Vui lòng thử lại sau!")

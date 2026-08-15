@@ -2,23 +2,27 @@ import discord
 from discord.ext import commands
 import os
 from datetime import datetime
+import database as db
 
 class MemberLogsCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
     def get_log_channel(self, guild: discord.Guild):
-        """Hàm hỗ trợ lấy kênh logs từ biến môi trường"""
+        """Ưu tiên lấy kênh Member Log từ Database, dự phòng file .env"""
+        config = db.get_guild_config(guild.id)
+        channel_id = config.get("member_logs_id")
+
+        if channel_id:
+            channel = guild.get_channel(channel_id)
+            if channel:
+                return channel
+
         log_channel_env = os.getenv("MEMBER_LOGS")
-        if not log_channel_env:
-            return None
-            
-        try:
-            channel_id = int(log_channel_env)
-            return guild.get_channel(channel_id)
-        except ValueError:
-            print("⚠️ [Warning] MEMBER_LOGS trong .env không phải là ID chữ số hợp lệ!")
-            return None
+        if log_channel_env and log_channel_env.isdigit():
+            return guild.get_channel(int(log_channel_env))
+
+        return None
 
     # ==========================================
     # 1. THEO DÕI THÀNH VIÊN THAM GIA (JOIN)
@@ -34,7 +38,7 @@ class MemberLogsCog(commands.Cog):
         embed = discord.Embed(
             title="📥 THÀNH VIÊN MỚI THAM GIA",
             description=f"**{member.mention}** (`{member.name}`) đã gia nhập máy chủ.",
-            color=0x2ecc71, # Màu xanh lá
+            color=0x2ecc71,
             timestamp=datetime.now()
         )
         embed.set_author(name=f"{member.display_name} ({member.id})", icon_url=member.display_avatar.url)
@@ -57,7 +61,6 @@ class MemberLogsCog(commands.Cog):
         if not log_channel:
             return
 
-        # Tính toán thời gian thành viên đã ở trong server trước khi rời đi
         joined_str = "Không xác định"
         if member.joined_at:
             joined_ts = int(member.joined_at.timestamp())
@@ -66,7 +69,7 @@ class MemberLogsCog(commands.Cog):
         embed = discord.Embed(
             title="📤 THÀNH VIÊN RỜI MÁY CHỦ",
             description=f"**{member.mention}** (`{member.name}`) đã rời khỏi hoặc bị đuổi khỏi máy chủ.",
-            color=0xe74c3c, # Màu đỏ
+            color=0xe74c3c,
             timestamp=datetime.now()
         )
         embed.set_author(name=f"{member.display_name} ({member.id})", icon_url=member.display_avatar.url)
@@ -89,7 +92,7 @@ class MemberLogsCog(commands.Cog):
         if not log_channel:
             return
 
-        # --- A. ĐỔI BIỆT DANH (NICKNAME) ---
+        # Đổi biệt danh
         if before.nick != after.nick:
             before_nick = before.nick if before.nick else "*[Không có - Dùng tên gốc]*"
             after_nick = after.nick if after.nick else "*[Đã xóa - Dùng tên gốc]*"
@@ -97,7 +100,7 @@ class MemberLogsCog(commands.Cog):
             embed = discord.Embed(
                 title="📝 THAY ĐỔI BIỆT DANH",
                 description=f"**{after.mention}** đã thay đổi biệt danh trên server.",
-                color=0x3498db, # Màu xanh dương
+                color=0x3498db,
                 timestamp=datetime.now()
             )
             embed.set_author(name=f"{after.display_name} ({after.id})", icon_url=after.display_avatar.url)
@@ -110,7 +113,7 @@ class MemberLogsCog(commands.Cog):
             except discord.Forbidden:
                 pass
 
-        # --- B. CẬP NHẬT VAI TRÒ (ROLES) ---
+        # Cập nhật vai trò (Role)
         if before.roles != after.roles:
             added_roles = [role for role in after.roles if role not in before.roles]
             removed_roles = [role for role in before.roles if role not in after.roles]
@@ -119,7 +122,7 @@ class MemberLogsCog(commands.Cog):
                 embed = discord.Embed(
                     title="🛡️ CẬP NHẬT VAI TRÒ (ROLE)",
                     description=f"Thành viên **{after.mention}** vừa có sự thay đổi về Role.",
-                    color=0x9b59b6, # Màu tím
+                    color=0x9b59b6,
                     timestamp=datetime.now()
                 )
                 embed.set_author(name=f"{after.display_name} ({after.id})", icon_url=after.display_avatar.url)
