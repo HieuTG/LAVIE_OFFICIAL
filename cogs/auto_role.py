@@ -81,7 +81,7 @@ class AutoRoleCog(commands.Cog):
         # 5. Tiến hành cấp Role
         try:
             await member.add_roles(role, reason=f"Được thêm bởi {ctx.author}")
-            await ctx.reply(f"✅ Đã thêm thành công role {role.mention} cho {member.mention}!")
+            await ctx.reply(f"✅ Đã thêm thành công role ``ngoan xinh iu`` cho {member.mention}!")
         except discord.Forbidden:
             await ctx.reply("❌ **Thiếu quyền!** Vị trí Role của Bot trong Cài đặt máy chủ đang thấp hơn Role cần cấp.")
         except Exception as e:
