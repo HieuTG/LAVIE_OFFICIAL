@@ -24,7 +24,7 @@ def init_db():
                 auto_role_id INTEGER,
                 -- Hệ thống Ticket
                 ticket_category_id INTEGER,
-                ticket_support_role_id INTEGER
+                ticket_support_role_id TEXT
             )
         """)
         conn.commit()
